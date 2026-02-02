@@ -21,6 +21,8 @@ npm install @edenware/conn-racing
 
 ## Usage
 
+### ESM
+
 ```javascript
 import ConnRacing from '@edenware/conn-racing';
 
@@ -44,6 +46,24 @@ racing.on('end', () => {
   console.log('Racing finished');
 });
 ```
+
+### CommonJS
+
+```javascript
+const ConnRacing = require('@edenware/conn-racing');
+
+const racing = new ConnRacing(
+  ['https://server1.com/stream', 'https://server2.com/stream'],
+  { retries: 3, timeout: 5000 }
+);
+
+let result;
+while ((result = await racing.next()) !== false) {
+  console.log(result.url, result.time, result.valid, result.status);
+}
+```
+
+The package supports both ESM and CommonJS via conditional exports.
 
 ### Options
 
