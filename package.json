@@ -1,0 +1,45 @@
+{
+  "name": "@edenware/conn-racing",
+  "version": "1.0.0",
+  "description": "High-performance connection testing and racing: test multiple URLs in parallel to find the fastest and most reliable connection.",
+  "type": "module",
+  "exports": "./conn-racing.js",
+  "main": "./conn-racing.js",
+  "files": [
+    "conn-racing.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "connection",
+    "racing",
+    "url",
+    "parallel",
+    "fetch",
+    "head",
+    "latency",
+    "fastest",
+    "retry",
+    "timeout"
+  ],
+  "author": "Edenware",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EdenwareApps/conn-racing.git"
+  },
+  "bugs": {
+    "url": "https://github.com/EdenwareApps/conn-racing/issues"
+  },
+  "homepage": "https://edenware.app",
+  "dependencies": {
+    "needle": "^3.3.0",
+    "p-limit": "^6.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
