@@ -61,24 +61,42 @@ class ConnRacing extends EventEmitter {
         const start = Date.now() / 1000
         const timeoutMs = attempt * this.opts.timeout
         const controller = new AbortController()
-        const request = needle('head', url, {
+        const opts = {
             timeout: timeoutMs,
             follow_max: 10,
             signal: controller.signal,
-        })
-        this.activeDownloads.add(controller)
-
-        let response
-        let error
-        try {
-            response = await request
-        } catch (err) {
-            error = err
+            headers: {
+                'Range': 'bytes=0-0',
+                'Connection': 'close',
+                'User-Agent': 'ConnRacing/1.0 (Node.js)',
+            },
         }
+
+        const redirectCodes = [301, 302, 303, 307, 308]
+        const { response, error } = await new Promise((resolve) => {
+            let captured = false
+            const stream = needle.get(url, opts)
+            this.activeDownloads.add(controller)
+
+            stream.on('response', (resp) => {
+                if (captured) return
+                if (redirectCodes.includes(resp.statusCode)) return
+                captured = true
+                controller.abort()
+                this.activeDownloads.delete(controller)
+                resolve({ response: resp, error: null })
+            })
+
+            stream.on('done', (err) => {
+                if (captured) return
+                captured = true
+                this.activeDownloads.delete(controller)
+                resolve({ response: null, error: err })
+            })
+        })
 
         this.processedCount++
         if (response && response.statusCode !== undefined) {
-            this.activeDownloads.delete(controller)
             return this.handleDownloadResponse(url, response, start, succeeded)
         }
 
@@ -92,14 +110,14 @@ class ConnRacing extends EventEmitter {
 
         this.results.push(result)
         this.results.sort((a, b) => a.time - b.time)
-        this.activeDownloads.delete(controller)
         this.pump()
         return result.status
     }
 
     handleDownloadResponse(url, response, start, succeeded) {
         const statusCode = response.statusCode
-        const isValid = statusCode >= 200 && statusCode < 300
+        // 416 Range Not Satisfiable is valid when using Range: bytes=0-0 (e.g. empty file)
+        const isValid = (statusCode >= 200 && statusCode < 300) || statusCode === 416
         const result = {
             time: Date.now() / 1000 - start,
             url,

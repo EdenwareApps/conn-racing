@@ -225,22 +225,38 @@ var ConnRacing = class extends import_node_events.EventEmitter {
     const start = Date.now() / 1e3;
     const timeoutMs = attempt * this.opts.timeout;
     const controller = new AbortController();
-    const request = (0, import_needle.default)("head", url, {
+    const opts = {
       timeout: timeoutMs,
       follow_max: 10,
-      signal: controller.signal
+      signal: controller.signal,
+      headers: {
+        "Range": "bytes=0-0",
+        "Connection": "close",
+        "User-Agent": "ConnRacing/1.0 (Node.js)"
+      }
+    };
+    const redirectCodes = [301, 302, 303, 307, 308];
+    const { response, error } = await new Promise((resolve) => {
+      let captured = false;
+      const stream = import_needle.default.get(url, opts);
+      this.activeDownloads.add(controller);
+      stream.on("response", (resp) => {
+        if (captured) return;
+        if (redirectCodes.includes(resp.statusCode)) return;
+        captured = true;
+        controller.abort();
+        this.activeDownloads.delete(controller);
+        resolve({ response: resp, error: null });
+      });
+      stream.on("done", (err) => {
+        if (captured) return;
+        captured = true;
+        this.activeDownloads.delete(controller);
+        resolve({ response: null, error: err });
+      });
     });
-    this.activeDownloads.add(controller);
-    let response;
-    let error;
-    try {
-      response = await request;
-    } catch (err) {
-      error = err;
-    }
     this.processedCount++;
     if (response && response.statusCode !== void 0) {
-      this.activeDownloads.delete(controller);
       return this.handleDownloadResponse(url, response, start, succeeded);
     }
     const result = {
@@ -252,13 +268,12 @@ var ConnRacing = class extends import_node_events.EventEmitter {
     };
     this.results.push(result);
     this.results.sort((a, b) => a.time - b.time);
-    this.activeDownloads.delete(controller);
     this.pump();
     return result.status;
   }
   handleDownloadResponse(url, response, start, succeeded) {
     const statusCode = response.statusCode;
-    const isValid = statusCode >= 200 && statusCode < 300;
+    const isValid = statusCode >= 200 && statusCode < 300 || statusCode === 416;
     const result = {
       time: Date.now() / 1e3 - start,
       url,

@@ -1,6 +1,6 @@
 {
   "name": "@edenware/conn-racing",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "High-performance connection testing and racing: test multiple URLs in parallel to find the fastest and most reliable connection.",
   "type": "module",
   "exports": {
