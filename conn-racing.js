@@ -1,14 +1,24 @@
 import { EventEmitter } from 'node:events'
-import needle from 'needle'
+import http from 'node:http'
+import https from 'node:https'
 import pLimit from 'p-limit'
 
+const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
 const defaultOpts = { retries: 3, timeout: 5000 }
+const REDIRECT_CODES = [301, 302, 303, 307, 308]
+
+// If timeout < 100, treat as seconds (e.g. 8 -> 8000ms). Otherwise use as ms.
+function normalizeTimeout(ms) {
+    return typeof ms === 'number' && ms < 100 ? ms * 1000 : ms
+}
 
 class ConnRacing extends EventEmitter {
     constructor(urls, opts = {}) {
         super()
         this.urls = [...urls]
-        this.opts = { ...defaultOpts, ...opts }
+        const merged = { ...defaultOpts, ...opts }
+        merged.timeout = normalizeTimeout(merged.timeout)
+        this.opts = merged
         this.results = []
         this.callbacks = []
         this.activeDownloads = new Set()
@@ -61,42 +71,20 @@ class ConnRacing extends EventEmitter {
         const start = Date.now() / 1000
         const timeoutMs = attempt * this.opts.timeout
         const controller = new AbortController()
-        const opts = {
-            timeout: timeoutMs,
-            follow_max: 10,
-            signal: controller.signal,
-            headers: {
-                'Range': 'bytes=0-0',
-                'Connection': 'close',
-                'User-Agent': 'ConnRacing/1.0 (Node.js)',
-            },
+        this.activeDownloads.add(controller)
+
+        let response
+        let error
+        try {
+            response = await this.fetchHeadersOnly(url, timeoutMs, controller)
+        } catch (err) {
+            error = err
         }
 
-        const redirectCodes = [301, 302, 303, 307, 308]
-        const { response, error } = await new Promise((resolve) => {
-            let captured = false
-            const stream = needle.get(url, opts)
-            this.activeDownloads.add(controller)
-
-            stream.on('response', (resp) => {
-                if (captured) return
-                if (redirectCodes.includes(resp.statusCode)) return
-                captured = true
-                controller.abort()
-                this.activeDownloads.delete(controller)
-                resolve({ response: resp, error: null })
-            })
-
-            stream.on('done', (err) => {
-                if (captured) return
-                captured = true
-                this.activeDownloads.delete(controller)
-                resolve({ response: null, error: err })
-            })
-        })
-
         this.processedCount++
-        if (response && response.statusCode !== undefined) {
+        this.activeDownloads.delete(controller)
+
+        if (response) {
             return this.handleDownloadResponse(url, response, start, succeeded)
         }
 
@@ -104,7 +92,7 @@ class ConnRacing extends EventEmitter {
             time: Date.now() / 1000 - start,
             url,
             valid: false,
-            status: error?.statusCode || error?.status || error?.response?.status || null,
+            status: error?.statusCode ?? error?.response?.statusCode ?? null,
             error: error?.message || 'REQUEST_FAILED'
         }
 
@@ -112,6 +100,54 @@ class ConnRacing extends EventEmitter {
         this.results.sort((a, b) => a.time - b.time)
         this.pump()
         return result.status
+    }
+
+    fetchHeadersOnly(url, timeoutMs, controller, redirectCount = 0) {
+        const maxRedirects = 10
+        const parsed = new URL(url)
+        const mod = parsed.protocol === 'https:' ? https : http
+        const userAgent = this.opts.userAgent ?? DEFAULT_USER_AGENT
+
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                try { controller.abort() } catch (_) {}
+                reject(Object.assign(new Error('Request timeout'), { code: 'ETIMEDOUT' }))
+            }, timeoutMs)
+
+            const req = mod.request(url, {
+                method: 'GET',
+                headers: {
+                    'Range': 'bytes=0-0',
+                    'Connection': 'close',
+                    'User-Agent': userAgent,
+                },
+                signal: controller.signal,
+            }, (res) => {
+                clearTimeout(timeout)
+                res.destroy()
+
+                const status = res.statusCode
+                if (REDIRECT_CODES.includes(status) && redirectCount < maxRedirects) {
+                    const rawLoc = res.headers?.location ?? res.headers?.['location']
+                    const loc = typeof rawLoc === 'string' ? rawLoc.trim() : (Array.isArray(rawLoc) ? rawLoc[0]?.trim() : '')
+                    if (loc) {
+                        try {
+                            const nextUrl = /^https?:\/\//i.test(loc) ? loc : new URL(loc, url).href
+                            return this.fetchHeadersOnly(nextUrl, timeoutMs, controller, redirectCount + 1)
+                                .then(resolve).catch(reject)
+                        } catch (_) {
+                            // invalid Location URL, fall through to resolve with redirect status
+                        }
+                    }
+                }
+                resolve({ statusCode: status, headers: res.headers || {} })
+            })
+            req.on('error', (err) => {
+                clearTimeout(timeout)
+                reject(err)
+            })
+            req.end()
+        })
     }
 
     handleDownloadResponse(url, response, start, succeeded) {

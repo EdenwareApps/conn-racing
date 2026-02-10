@@ -32,7 +32,8 @@ __export(conn_racing_exports, {
   default: () => conn_racing_default
 });
 var import_node_events = require("node:events");
-var import_needle = __toESM(require("needle"), 1);
+var import_node_http = __toESM(require("node:http"), 1);
+var import_node_https = __toESM(require("node:https"), 1);
 
 // node_modules/yocto-queue/index.js
 var Node = class {
@@ -174,12 +175,19 @@ function validateConcurrency(concurrency) {
 }
 
 // conn-racing.js
+var DEFAULT_USER_AGENT = "ConnRacing/1.0 (Node.js)";
 var defaultOpts = { retries: 3, timeout: 5e3 };
+var REDIRECT_CODES = [301, 302, 303, 307, 308];
+function normalizeTimeout(ms) {
+  return typeof ms === "number" && ms < 100 ? ms * 1e3 : ms;
+}
 var ConnRacing = class extends import_node_events.EventEmitter {
   constructor(urls, opts = {}) {
     super();
     this.urls = [...urls];
-    this.opts = { ...defaultOpts, ...opts };
+    const merged = { ...defaultOpts, ...opts };
+    merged.timeout = normalizeTimeout(merged.timeout);
+    this.opts = merged;
     this.results = [];
     this.callbacks = [];
     this.activeDownloads = /* @__PURE__ */ new Set();
@@ -225,51 +233,75 @@ var ConnRacing = class extends import_node_events.EventEmitter {
     const start = Date.now() / 1e3;
     const timeoutMs = attempt * this.opts.timeout;
     const controller = new AbortController();
-    const opts = {
-      timeout: timeoutMs,
-      follow_max: 10,
-      signal: controller.signal,
-      headers: {
-        "Range": "bytes=0-0",
-        "Connection": "close",
-        "User-Agent": "ConnRacing/1.0 (Node.js)"
-      }
-    };
-    const redirectCodes = [301, 302, 303, 307, 308];
-    const { response, error } = await new Promise((resolve) => {
-      let captured = false;
-      const stream = import_needle.default.get(url, opts);
-      this.activeDownloads.add(controller);
-      stream.on("response", (resp) => {
-        if (captured) return;
-        if (redirectCodes.includes(resp.statusCode)) return;
-        captured = true;
-        controller.abort();
-        this.activeDownloads.delete(controller);
-        resolve({ response: resp, error: null });
-      });
-      stream.on("done", (err) => {
-        if (captured) return;
-        captured = true;
-        this.activeDownloads.delete(controller);
-        resolve({ response: null, error: err });
-      });
-    });
+    this.activeDownloads.add(controller);
+    let response;
+    let error;
+    try {
+      response = await this.fetchHeadersOnly(url, timeoutMs, controller);
+    } catch (err) {
+      error = err;
+    }
     this.processedCount++;
-    if (response && response.statusCode !== void 0) {
+    this.activeDownloads.delete(controller);
+    if (response) {
       return this.handleDownloadResponse(url, response, start, succeeded);
     }
     const result = {
       time: Date.now() / 1e3 - start,
       url,
       valid: false,
-      status: error?.statusCode || error?.status || error?.response?.status || null,
+      status: error?.statusCode ?? error?.response?.statusCode ?? null,
       error: error?.message || "REQUEST_FAILED"
     };
     this.results.push(result);
     this.results.sort((a, b) => a.time - b.time);
     this.pump();
     return result.status;
+  }
+  fetchHeadersOnly(url, timeoutMs, controller, redirectCount = 0) {
+    const maxRedirects = 10;
+    const parsed = new URL(url);
+    const mod = parsed.protocol === "https:" ? import_node_https.default : import_node_http.default;
+    const userAgent = this.opts.userAgent ?? DEFAULT_USER_AGENT;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        try {
+          controller.abort();
+        } catch (_) {
+        }
+        reject(Object.assign(new Error("Request timeout"), { code: "ETIMEDOUT" }));
+      }, timeoutMs);
+      const req = mod.request(url, {
+        method: "GET",
+        headers: {
+          "Range": "bytes=0-0",
+          "Connection": "close",
+          "User-Agent": userAgent
+        },
+        signal: controller.signal
+      }, (res) => {
+        clearTimeout(timeout);
+        res.destroy();
+        const status = res.statusCode;
+        if (REDIRECT_CODES.includes(status) && redirectCount < maxRedirects) {
+          const rawLoc = res.headers?.location ?? res.headers?.["location"];
+          const loc = typeof rawLoc === "string" ? rawLoc.trim() : Array.isArray(rawLoc) ? rawLoc[0]?.trim() : "";
+          if (loc) {
+            try {
+              const nextUrl = /^https?:\/\//i.test(loc) ? loc : new URL(loc, url).href;
+              return this.fetchHeadersOnly(nextUrl, timeoutMs, controller, redirectCount + 1).then(resolve).catch(reject);
+            } catch (_) {
+            }
+          }
+        }
+        resolve({ statusCode: status, headers: res.headers || {} });
+      });
+      req.on("error", (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+      req.end();
+    });
   }
   handleDownloadResponse(url, response, start, succeeded) {
     const statusCode = response.statusCode;

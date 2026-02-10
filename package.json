@@ -1,6 +1,6 @@
 {
   "name": "@edenware/conn-racing",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "High-performance connection testing and racing: test multiple URLs in parallel to find the fastest and most reliable connection.",
   "type": "module",
   "exports": {
@@ -16,7 +16,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "npx esbuild conn-racing.js --bundle --format=cjs --platform=node --external:needle --outfile=conn-racing.cjs",
+    "build": "npx esbuild conn-racing.js --bundle --format=cjs --platform=node --outfile=conn-racing.cjs",
     "postbuild": "node scripts/postbuild.cjs",
     "test": "node --test test/*.test.js test/*.test.cjs"
   },
@@ -46,7 +46,6 @@
     "esbuild": "^0.27.0"
   },
   "dependencies": {
-    "needle": "^3.3.0",
     "p-limit": "^6.1.0"
   },
   "engines": {
